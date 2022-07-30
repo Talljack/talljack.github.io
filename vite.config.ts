@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/ban-ts-comment */
 import { resolve } from 'path'
 import { defineConfig } from 'vite'
 import fs from 'fs-extra'
@@ -15,7 +16,6 @@ import anchor from 'markdown-it-anchor'
 import LinkAttributes from 'markdown-it-link-attributes'
 import UnoCSS from 'unocss/vite'
 import SVG from 'vite-svg-loader'
-// @ts-expect-error missing types
 import TOC from 'markdown-it-table-of-contents'
 import { slugify } from './scripts/slugify'
 
@@ -80,7 +80,6 @@ export default defineConfig({
           }),
         })
 
-        // @ts-expect-error anyway
         md.use(LinkAttributes, {
           matcher: (link: string) => /^https?:\/\//.test(link),
           attrs: {
@@ -137,6 +136,7 @@ export default defineConfig({
     },
   },
 
+  // @ts-expect-error
   ssgOptions: {
     formatting: 'minify',
     format: 'cjs',

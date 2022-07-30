@@ -1,3 +1,9 @@
-# posts
+---
+title: Blog - Talljack
+display: ''
+plum: true
+---
 
-This is my posts
+<SubNav/>
+
+<ListPosts />

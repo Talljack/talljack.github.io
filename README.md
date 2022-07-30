@@ -1,1 +1,3 @@
-# talljack.github.io
+# Talljack
+
+My [blogs](talljackme.netlify.app/) about development
