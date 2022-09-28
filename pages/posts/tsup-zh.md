@@ -246,7 +246,7 @@ ts文件主要是通过esbuild进行打包的，比较依赖于esbuild的功能�
    })
 ```
 runEsbuild函数主要就是负责进行esbuild打包输出，讲`pluginContainer`传入，可以使用插件对各个生命周期函数进行处理，比如打包前调用`pluginContainer.buildStarted`进行输出或者打印信息
-1. pluginContainer
+4.1. pluginContainer
    ```typescript
    export class PluginContainer {
      plugins: Plugin[]
@@ -291,5 +291,146 @@ runEsbuild函数主要就是负责进行esbuild打包输出，讲`pluginContaine
      }
    }
    ```
+4.2 runEsbuild方法
+runEsbuild的功能主要就是对文件进行打包，输出，同时在打包输出后也会调用pluginContainer.buildFinished函数，可以在打包执行后做一些操作
+```typescript
+const pkg = await loadPkg(process.cwd())
+const deps = await getDeps(process.cwd())
+const external = [
+ // Exclude dependencies, e.g. `lodash`, `lodash/get`
+ ...deps.map((dep) => new RegExp(`^${dep}($|\\/|\\\\)`)),
+ ...(options.external || []),
+]
+const outDir = options.outDir
 
+const outExtension = getOutputExtensionMap(options, format, pkg.type)
+const env: { [k: string]: string } = {
+ ...options.env,
+}
+
+if (options.replaceNodeEnv) {
+ env.NODE_ENV =
+   options.minify || options.minifyWhitespace ? 'production' : 'development'
+}
+```
+首先先对options数据进行处理，比如获取依赖，获取输出目录，获取文件后缀，获取环境变量等。
+
+因为是基于esbuild打包，所以配置都是围绕着esbuild的配置进行兼容处理的。
+
+```typescript
+const esbuildPlugins: Array<EsbuildPlugin | false | undefined> = [
+ format === 'cjs' && nodeProtocolPlugin(),
+ {
+   name: 'modify-options',
+   setup(build) {
+     pluginContainer.modifyEsbuildOptions(build.initialOptions)
+     if (options.esbuildOptions) {
+      // 用户可以传入esbuildOptions做一些callback操作
+       options.esbuildOptions(build.initialOptions, { format })
+     }
+   },
+ },
+ // esbuild's `external` option doesn't support RegExp
+ // So here we use a custom plugin to implement it
+ // external插件，可以将依赖排除在外
+ format !== 'iife' &&
+   externalPlugin({
+     external,
+     noExternal: options.noExternal,
+     skipNodeModulesBundle: options.skipNodeModulesBundle,
+     tsconfigResolvePaths: options.tsconfigResolvePaths,
+   }),
+// 处理tsconfigDecoratorMetadata，使用swc触发 decorator metadata
+ options.tsconfigDecoratorMetadata && swcPlugin({ logger }),
+ // 原生模块的处理
+ nativeNodeModulesPlugin(),
+ // css打包的插件
+ postcssPlugin({ css, inject: options.injectStyle }),
+ // svelte的处理插件
+ sveltePlugin({ css }),
+ // 用户自定义的插件，最后执行
+ ...(options.esbuildPlugins || []),
+]
+```
+插件就不讲太多了，只简单讲了下其作用，因为主要是带大家了解内部的打包原理
+
+然后就是调用esbuild的build方法进行打包输出
+```typescript
+result = await esbuild({
+   entryPoints: options.entry,
+   format:
+     (format === 'cjs' && splitting) || options.treeshake ? 'esm' : format,
+   bundle: typeof options.bundle === 'undefined' ? true : options.bundle,
+   platform,
+   globalName: options.globalName,
+   jsxFactory: options.jsxFactory,
+   jsxFragment: options.jsxFragment,
+   sourcemap: options.sourcemap ? 'external' : false,
+   target: options.target,
+   banner,
+   footer,
+   tsconfig: options.tsconfig,
+   // ....
+   plugins: esbuildPlugins,
+   // ....
+   logLevel: 'error',
+   minify: options.minify,
+})
+```
+打包完成之后，在调用pluginContainer.buildFinished方法，进行buildFinished生命周期的回调
+```typescript
+// Manually write files
+if (result && result.outputFiles) {
+ await pluginContainer.buildFinished({
+   outputFiles: result.outputFiles,
+   metafile: result.metafile,
+ })
+
+ const timeInMs = Date.now() - startTime
+ logger.success(format, `⚡️ Build success in ${Math.floor(timeInMs)}ms`)
+}
+```
+如果设置了metafile，那么也会把对应的metafile写入到outdir目录下面的`metafile-${format}.json`文件中
+
+之前讲到了dts会有watch模式监听文件变化进行打包
+
+这里的esbuild也会监听文件变化，不同的是，`esbuild`打包是通过`chokidar`进行文件的监听的。
+```typescript
+const { watch } = await import('chokidar')
+// 获取到监听的文件路径
+const watchPaths =
+ typeof options.watch === 'boolean'
+   ? '.'
+   : Array.isArray(options.watch)
+   ? options.watch.filter(
+       (path): path is string => typeof path === 'string'
+     )
+   : options.watch
+// 根据watchPaths以及ignored生成watcher
+const watcher = watch(watchPaths, {
+    ignoreInitial: true,
+    ignorePermissionErrors: true,
+    ignored,
+})
+// 监听文件变化，进行打包
+// 其中watch的回调打包进行了debounce优化
+watcher.on('all', (type, file) => {
+    file = slash(file)
+    // By default we only rebuild when imported files change
+    // If you specify custom `watch`, a string or multiple strings
+    // We rebuild when those files change
+    if (options.watch === true && !buildDependencies.has(file)) {
+      return
+    }
+    logger.info('CLI', `Change detected: ${type} ${file}`)
+    debouncedBuildAll()
+})
+```
+最后将两个任务都放到`Promise.all`中执行，进行并行打包
+```typescript
+await Promise.all([dtsTask(), mainTasks()])
+```
+
+## 总结
+好了，到这里就讲完了esbuild的打包原理，虽然是相对比较浅的进行了讲解，但是如果你正在使用`tsup`或者你在学习`esbuild`的话都是有帮助的，当然如果你想了解插件系统怎么实现，也可以参考这个，希望对你有所帮助。
 
